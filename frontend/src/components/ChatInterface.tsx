@@ -1,6 +1,8 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Send, Sparkles } from 'lucide-react';
+import { Send, Sparkles, Loader2 } from 'lucide-react';
 import { UserContext } from '../App';
+import { chatService, ChatMessage } from '../services/chatService';
+import { useToast } from './Toast';
 
 interface Message {
   id: string;
@@ -14,27 +16,19 @@ interface Props {
 }
 
 export function ChatInterface({ onComplete }: Props) {
-  const [messages, setMessages] = useState<Message[]>([
-    {
-      id: '1',
-      text: "Hi there! I'm your personal fashion AI stylist ✨ I'll help you find the perfect outfits by understanding your style preferences. What's the occasion you're dressing for?",
-      sender: 'ai',
-      timestamp: new Date()
-    }
-  ]);
+  const [messages, setMessages] = useState<Message[]>([]);
   const [currentMessage, setCurrentMessage] = useState('');
-  const [currentStep, setCurrentStep] = useState(0);
+  const [conversationId, setConversationId] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
   const [userContext, setUserContext] = useState<UserContext>({});
+  const [messageCount, setMessageCount] = useState(0);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const { error } = useToast();
 
-  const questions = [
-    "What's the occasion you're dressing for? (e.g., casual brunch, work meeting, date night)",
-    "What's your preferred style? (e.g., minimalist, streetwear, bohemian, classic)",
-    "Any color preferences? (e.g., neutrals, bold colors, pastels)",
-    "What's your budget range? (e.g., under $200, $200-500, $500+)"
-  ];
-
-  const contextKeys: (keyof UserContext)[] = ['occasion', 'style_preference', 'color_preference', 'budget'];
+  // Initialize conversation when component mounts
+  useEffect(() => {
+    initializeConversation();
+  }, []);
 
   useEffect(() => {
     scrollToBottom();
@@ -44,8 +38,52 @@ export function ChatInterface({ onComplete }: Props) {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   };
 
-  const handleSendMessage = () => {
-    if (!currentMessage.trim()) return;
+  const initializeConversation = async () => {
+    try {
+      setIsLoading(true);
+      const conversation = await chatService.createConversation({
+        title: 'Style Consultation',
+        initial_message: "Hi! I'm your personal fashion AI stylist ✨ I'll help you find the perfect outfits by understanding your style preferences. What's the occasion you're dressing for?"
+      });
+      
+      setConversationId(conversation.id);
+      
+      // Add the initial AI message
+      const initialMessage: Message = {
+        id: '1',
+        text: "Hi! I'm your personal fashion AI stylist ✨ I'll help you find the perfect outfits by understanding your style preferences. What's the occasion you're dressing for?",
+        sender: 'ai',
+        timestamp: new Date()
+      };
+      
+      setMessages([initialMessage]);
+    } catch (err: any) {
+      error('Chat Error', 'Failed to initialize chat. Please try again.');
+      console.error('Failed to initialize conversation:', err);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const extractContextFromMessage = (message: string, messageNumber: number): Partial<UserContext> => {
+    // Simple context extraction based on message order and content
+    const context: Partial<UserContext> = {};
+    
+    if (messageNumber === 1) {
+      context.occasion = message;
+    } else if (messageNumber === 2) {
+      context.style_preference = message;
+    } else if (messageNumber === 3) {
+      context.color_preference = message;
+    } else if (messageNumber === 4) {
+      context.budget = message;
+    }
+    
+    return context;
+  };
+
+  const handleSendMessage = async () => {
+    if (!currentMessage.trim() || !conversationId || isLoading) return;
 
     const newUserMessage: Message = {
       id: Date.now().toString(),
@@ -55,40 +93,56 @@ export function ChatInterface({ onComplete }: Props) {
     };
 
     setMessages(prev => [...prev, newUserMessage]);
-
-    // Update user context
-    const updatedContext = {
-      ...userContext,
-      [contextKeys[currentStep]]: currentMessage
-    };
+    
+    // Extract context from user message
+    const newContext = extractContextFromMessage(currentMessage, messageCount + 1);
+    const updatedContext = { ...userContext, ...newContext };
     setUserContext(updatedContext);
+    setMessageCount(prev => prev + 1);
 
+    const messageText = currentMessage;
     setCurrentMessage('');
+    setIsLoading(true);
 
-    // Generate AI response
-    setTimeout(() => {
-      let aiResponse = '';
-      const nextStep = currentStep + 1;
+    try {
+      // Send message to backend with context
+      const response = await chatService.sendMessage(conversationId, {
+        content: messageText,
+        context: updatedContext
+      });
 
-      if (nextStep < questions.length) {
-        aiResponse = `Great choice! ${questions[nextStep]}`;
-        setCurrentStep(nextStep);
-      } else {
-        aiResponse = "Perfect! I have everything I need to find amazing outfits for you. Now, let's upload a photo so I can analyze your body type and style preferences for the most personalized recommendations! 🔥";
+      // Add AI response to messages
+      const aiMessage: Message = {
+        id: response.message.id,
+        text: response.message.content,
+        sender: 'ai',
+        timestamp: new Date(response.message.timestamp)
+      };
+
+      setMessages(prev => [...prev, aiMessage]);
+
+      // Check if we have enough context to proceed to next step
+      if (messageCount >= 3 && updatedContext.occasion && updatedContext.style_preference) {
         setTimeout(() => {
           onComplete(updatedContext);
         }, 1000);
       }
 
-      const aiMessage: Message = {
+    } catch (err: any) {
+      error('Chat Error', 'Failed to send message. Please try again.');
+      console.error('Failed to send message:', err);
+      
+      // Add fallback AI response
+      const fallbackMessage: Message = {
         id: (Date.now() + 1).toString(),
-        text: aiResponse,
+        text: "I'm sorry, I'm having trouble connecting right now. Could you please try again?",
         sender: 'ai',
         timestamp: new Date()
       };
-
-      setMessages(prev => [...prev, aiMessage]);
-    }, 1000);
+      setMessages(prev => [...prev, fallbackMessage]);
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const handleKeyPress = (e: React.KeyboardEvent) => {
@@ -149,10 +203,14 @@ export function ChatInterface({ onComplete }: Props) {
             />
             <button
               onClick={handleSendMessage}
-              disabled={!currentMessage.trim()}
+              disabled={!currentMessage.trim() || isLoading}
               className="p-2 bg-gradient-to-r from-purple-500 to-pink-500 text-white rounded-full hover:shadow-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              <Send className="w-5 h-5" />
+              {isLoading ? (
+                <Loader2 className="w-5 h-5 animate-spin" />
+              ) : (
+                <Send className="w-5 h-5" />
+              )}
             </button>
           </div>
         </div>
