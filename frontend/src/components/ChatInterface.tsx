@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Send, Sparkles } from 'lucide-react';
 import { UserContext } from '../App';
+import { chat as chatApi } from '../lib/api';
 
 interface Message {
   id: string;
@@ -44,7 +45,7 @@ export function ChatInterface({ onComplete }: Props) {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   };
 
-  const handleSendMessage = () => {
+  const handleSendMessage = async () => {
     if (!currentMessage.trim()) return;
 
     const newUserMessage: Message = {
@@ -56,39 +57,48 @@ export function ChatInterface({ onComplete }: Props) {
 
     setMessages(prev => [...prev, newUserMessage]);
 
-    // Update user context
-    const updatedContext = {
-      ...userContext,
-      [contextKeys[currentStep]]: currentMessage
-    };
-    setUserContext(updatedContext);
-
+    // Call backend LLM chat
     setCurrentMessage('');
-
-    // Generate AI response
-    setTimeout(() => {
-      let aiResponse = '';
-      const nextStep = currentStep + 1;
-
-      if (nextStep < questions.length) {
-        aiResponse = `Great choice! ${questions[nextStep]}`;
-        setCurrentStep(nextStep);
-      } else {
-        aiResponse = "Perfect! I have everything I need to find amazing outfits for you. Now, let's upload a photo so I can analyze your body type and style preferences for the most personalized recommendations! 🔥";
-        setTimeout(() => {
-          onComplete(updatedContext);
-        }, 1000);
-      }
-
+    try {
+      const history = messages.map(m => ({ 
+        role: (m.sender === 'ai' ? 'assistant' : 'user') as 'user' | 'assistant' | 'system', 
+        content: m.text 
+      }));
+      const resp = await chatApi([...history, { role: 'user', content: currentMessage }]);
       const aiMessage: Message = {
         id: (Date.now() + 1).toString(),
-        text: aiResponse,
+        text: resp.reply,
         sender: 'ai',
         timestamp: new Date()
       };
-
       setMessages(prev => [...prev, aiMessage]);
-    }, 1000);
+
+      // Merge any extracted context
+      const mergedContext: UserContext = {
+        ...userContext,
+        ...resp.user_context
+      };
+      setUserContext(mergedContext);
+
+      // If we have all four keys, proceed to upload step automatically
+      const haveAll = contextKeys.every(k => (mergedContext as any)[k]);
+      if (haveAll) {
+        onComplete(mergedContext);
+      }
+    } catch (e) {
+      console.error('Chat API error:', e);
+      console.error('Error type:', typeof e);
+      console.error('Error message:', e instanceof Error ? e.message : String(e));
+      console.error('Error stack:', e instanceof Error ? e.stack : 'No stack trace');
+      
+      const aiMessage: Message = {
+        id: (Date.now() + 1).toString(),
+        text: 'Sorry, I encountered an error. Please try again.',
+        sender: 'ai',
+        timestamp: new Date()
+      };
+      setMessages(prev => [...prev, aiMessage]);
+    }
   };
 
   const handleKeyPress = (e: React.KeyboardEvent) => {

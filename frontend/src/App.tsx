@@ -4,6 +4,7 @@ import { ChatInterface } from './components/ChatInterface';
 import { ImageUpload } from './components/ImageUpload';
 import { OutfitRecommendations } from './components/OutfitRecommendations';
 import { LoadingAnalysis } from './components/LoadingAnalysis';
+import { analyzeImage, getRecommendations } from './lib/api';
 
 export interface UserContext {
   occasion?: string;
@@ -39,14 +40,20 @@ function App() {
     setCurrentStep('upload');
   };
 
-  const handleImageUpload = (imageUrl: string) => {
+  const handleImageUpload = async (imageUrl: string) => {
     setUploadedImage(imageUrl);
     setCurrentStep('analysis');
-    
-    // Simulate AI analysis delay
-    setTimeout(() => {
+
+    try {
+      await analyzeImage(imageUrl, userContext);
+      const resp = await getRecommendations(userContext, imageUrl);
+      setRecommendations(resp.recommendations || []);
+      setCurrentStep('results');
+    } catch (e) {
+      console.error(e);
+      // fallback to mock on error
       generateRecommendations();
-    }, 3000);
+    }
   };
 
   const generateRecommendations = () => {
